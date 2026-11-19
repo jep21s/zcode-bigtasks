@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# zctx — текущее заполнение контекстного окна сессии ZCode.
+# Читает последний usage из транскрипта модели (~/.zcode/cli/rollout/model-io-*.jsonl).
+#
+# Использование:
+#   zctx                 # самая свежая по mtime сессия
+#   zctx -s <id|часть>   # выбрать сессию по sessionId/имени файла
+#   zctx --limit N       # лимит окна (по умолч. $ZCTX_LIMIT или 1000000)
+#   zctx --warn-at N     # абсолютный порог warn в токенах (вместо 80% от лимита)
+#   zctx --json          # машинный вывод для jq
+set -euo pipefail
+
+ROLLDIR="$HOME/.zcode/cli/rollout"
+LIMIT="${ZCTX_LIMIT:-1000000}"
+WARN_AT="${ZCTX_WARN_AT:-}"
+SESSION=""
+JSON=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--session) SESSION="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    --warn-at) WARN_AT="$2"; shift 2 ;;
+    --json) JSON=1; shift ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n "$SESSION" ]]; then
+  FILE=$(ls -t "$ROLLDIR"/model-io-*.jsonl 2>/dev/null | grep -i -- "$SESSION" | head -1)
+  [[ -n "$FILE" ]] || { echo "session not found: $SESSION" >&2; exit 1; }
+else
+  FILE=$(ls -t "$ROLLDIR"/model-io-*.jsonl 2>/dev/null | head -1)
+fi
+[[ -n "$FILE" && -f "$FILE" ]] || { echo "no rollout files in $ROLLDIR" >&2; exit 1; }
+
+# Последняя запись с usage: inputTokens уже включает cacheRead;
+# +outputTokens — оценка контекста, на котором соберётся следующий ход.
+read -r IN OUT <<< "$(tac "$FILE" | grep -m1 '"inputTokens"' | jq -r '[.response.usage.inputTokens, .response.usage.outputTokens] | @tsv')"
+[[ -n "${IN:-}" ]] || { echo "no usage records in $FILE" >&2; exit 1; }
+
+USED=$(( IN + OUT ))
+PCT=$(( USED * 100 / LIMIT ))
+STATUS=ok
+if (( USED * 10 >= LIMIT * 9 )); then
+  STATUS=stop
+elif [[ -n "$WARN_AT" ]] && (( USED >= WARN_AT )); then
+  STATUS=warn
+elif (( PCT >= 80 )); then
+  STATUS=warn
+fi
+
+if (( JSON )); then
+  jq -n --arg file "$(basename "$FILE")" --argjson used "$USED" --argjson limit "$LIMIT" \
+        --argjson in "$IN" --argjson out "$OUT" --arg status "$STATUS" \
+        --argjson warnAt "${WARN_AT:-null}" \
+    '{file:$file, used:$used, limit:$limit, percent:($used*100/$limit|floor), warnAt:$warnAt, inputTokens:$in, outputTokens:$out, status:$status}'
+else
+  printf 'session %s\ncontext %s / %s (%d%%) [%s]\n' "$(basename "$FILE")" "$USED" "$LIMIT" "$PCT" "$STATUS"
+fi
