@@ -53,7 +53,7 @@ install_item() { # <src> <dst-dir>
 }
 
 command -v jq >/dev/null || echo "ВНИМАНИЕ: jq не найден — zctx без него не работает (apt install jq)"
-command -v tac >/dev/null || echo "ВНИМАНИЕ: tac (coreutils) не найден — zctx без него не работает"
+command -v awk >/dev/null || echo "ВНИМАНИЕ: awk не найден — zctx без него не работает"
 
 echo "Установка zcode-bigtasks (${MODE}) в $SKILLS_DST и $BIN_DST:"
 install_item "$REPO/skills/staged-task" "$SKILLS_DST"
